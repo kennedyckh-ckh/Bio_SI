@@ -335,21 +335,31 @@ function discussion(req: AiRequest): AiContent {
 export const llmProvider: AiProvider = {
   name: "hku-llm",
   async generate(req) {
-    const apiKey = process.env.HKU_API_KEY;
-    const endpoint = process.env.HKU_API_ENDPOINT;
-    if (!apiKey || !endpoint) {
-      throw new AiError("ai_not_configured", "HKU_API_KEY or HKU_API_ENDPOINT is missing.");
+    const apiKey = process.env.HKU_OPENAI_API_KEY;
+    const rawEndpoint = process.env.HKU_OPENAI_ENDPOINT;
+    const apiVersion = process.env.HKU_OPENAI_API_VERSION || "2024-02-01";
+    const model = process.env.AI_MODEL || "gpt-4o";
+
+    if (!apiKey || !rawEndpoint) {
+      throw new AiError(
+        "ai_not_configured",
+        "HKU_OPENAI_API_KEY or HKU_OPENAI_ENDPOINT is missing."
+      );
     }
+
+    const base = rawEndpoint.replace(/\/+$/, "");
+    const url = base.includes("/chat/completions")
+      ? base
+      : `${base}/openai/deployments/${encodeURIComponent(model)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
+
     const { system, user } = buildPrompt(req);
-    const res = await fetch(endpoint, {
+    const res = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "api-key": apiKey,
-        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: process.env.HKU_MODEL || "gpt-4o",
         response_format: { type: "json_object" },
         temperature: 0.3,
         messages: [
@@ -358,18 +368,20 @@ export const llmProvider: AiProvider = {
         ],
       }),
     });
+
     if (!res.ok) {
       const errText = await res.text();
-      throw new AiError("ai_upstream_error", `HKU API error (${res.status}): ${errText.slice(0, 200)}`);
+      throw new AiError(
+        "ai_upstream_error",
+        `HKU API error (${res.status}): ${errText.slice(0, 200)}`
+      );
     }
+
     const data = await res.json();
-    const rawText = data?.choices?.[0]?.message?.content ?? data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const rawText = data?.choices?.[0]?.message?.content;
     if (!rawText) throw new AiError("ai_empty_output", "HKU API returned an empty response.");
     const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
     return JSON.parse(cleaned);
   },
 };
-
-export function getProvider(): AiProvider {
-  return process.env.AI_PROVIDER === "llm" ? llmProvider : mockProvider;
 }
