@@ -383,6 +383,10 @@ export const llmProvider: AiProvider = {
     const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
     return JSON.parse(cleaned);
   },
-};export function getProvider(): AiProvider {
-  return process.env.AI_PROVIDER === "llm" ? llmProvider : mockProvider;
+export function getProvider(): AiProvider {
+  const mode = (process.env.AI_PROVIDER || "").trim().toLowerCase();
+  if (mode === "llm" || (mode !== "mock" && Boolean(process.env.HKU_OPENAI_API_KEY))) {
+    return llmProvider;
+  }
+  return mockProvider;
 }
