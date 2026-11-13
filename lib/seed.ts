@@ -2,10 +2,10 @@ import { all, get, run, tx, now, num } from "./db";
 import { hashPassword } from "./auth";
 
 export const DEMO_ACCOUNTS = [
-  { role: "teacher", name: "Ms Chan (Teacher 1)", email: "teacher1@school.test", password: "Teacher1!demo" },
-  { role: "teacher", name: "Mr Lee (Teacher 2)", email: "teacher2@school.test", password: "Teacher2!demo" },
-  { role: "teacher", name: "Ms Wong (Teacher 3)", email: "teacher3@school.test", password: "Teacher3!demo" },
-  { role: "educator", name: "Dr Ng (Teacher Educator)", email: "educator@school.test", password: "Educator1!demo" },
+  { role: "teacher", name: "Mr Lau (Teacher 1)", email: "teacher1@school.test", password: "Teacher1!demo" },
+  { role: "teacher", name: "Mr Ng (Teacher 2)", email: "teacher2@school.test", password: "Teacher2!demo" },
+  { role: "teacher", name: "Mr Yu (Teacher 3)", email: "teacher3@school.test", password: "Teacher3!demo" },
+  { role: "educator", name: "Kennedy (Teacher Educator)", email: "kennedyckh@hku.hk", password: "2002041216" },
 ] as const;
 
 export function seedIfEmpty() {
