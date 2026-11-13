@@ -323,7 +323,14 @@ function discussion(req: AiRequest): AiContent {
     sections: [{ kind: "question", heading: "Open questions to debate (no single right answer)", items: q.slice(0, 6) }],
     note: MOCK_NOTE,
   };
-}
+}export const mockProvider: AiProvider = {
+  name: "mock-rule-based",
+  async generate(req) {
+    if (req.kind === "group_summary") return groupSummary(req);
+    if (req.kind === "cross_group") return crossGroup(req);
+    return discussion(req);
+  },
+};
 
 export const llmProvider: AiProvider = {
   name: "hku-llm",
