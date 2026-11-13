@@ -1400,7 +1400,22 @@ export async function generateValidated(
 ): Promise<{ content: AiContent; cited: number[] }> {
   validateRequest(req);
 
-  const provider = getProvider();
+  const provider = getProvider(): AiProvider {
+  const mode = (process.env.AI_PROVIDER || "")
+    .trim()
+    .toLowerCase();
+
+  console.info("[AI configuration]", {
+    mode,
+    hasApiKey: Boolean(process.env.HKU_OPENAI_API_KEY?.trim()),
+    hasEndpoint: Boolean(process.env.HKU_OPENAI_ENDPOINT?.trim()),
+    hasModel: Boolean(process.env.AI_MODEL?.trim()),
+  });
+
+  if (mode === "llm") {
+    return llmProvider;
+  }
+
   const content = await provider.generate(req);
 
   return validateForRequest(content, req);
