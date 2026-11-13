@@ -1104,61 +1104,39 @@ export const mockProvider: AiProvider = {
  *
  * Other gateway formats may require changes based on HKU documentation.
  */
+/* ------------------------------------------------------------------ */
+/* LLM endpoint configuration                                         */
+/* ------------------------------------------------------------------ */
+
 function buildLlmUrl(
   rawEndpoint: string,
   deployment: string,
   apiVersion: string
 ): string {
   let url: URL;
-
   try {
     url = new URL(rawEndpoint.trim());
   } catch {
-    throw new AiError(
-      "ai_not_configured",
-      "HKU_OPENAI_ENDPOINT is not a valid URL."
-    );
+    throw new AiError("ai_not_configured", "HKU_OPENAI_ENDPOINT is not a valid URL.");
   }
 
   if (url.protocol !== "https:") {
-    throw new AiError(
-      "ai_not_configured",
-      "HKU_OPENAI_ENDPOINT must use HTTPS."
-    );
-  }
-
-  if (url.username || url.password || url.hash) {
-    throw new AiError(
-      "ai_not_configured",
-      "HKU_OPENAI_ENDPOINT must not contain credentials or a fragment."
-    );
+    throw new AiError("ai_not_configured", "HKU_OPENAI_ENDPOINT must use HTTPS.");
   }
 
   const path = url.pathname.replace(/\/+$/, "");
 
-  if (/\/chat\/completions$/i.test(path)) {
-    if (!/\/openai\/deployments\/[^/]+\/chat\/completions$/i.test(path)) {
-      throw new AiError(
-        "ai_not_configured",
-        "This module expects a deployment-based Azure chat-completions URL. A v1 or gateway URL requires a different request configuration."
-      );
+  if (!/\/chat\/completions$/i.test(path)) {
+    if (/\/v1$/i.test(path)) {
+      url.pathname = `${path}/chat/completions`;
+    } else {
+      url.pathname = `${path}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`;
     }
-
-    url.pathname = path;
   } else {
-    if (path !== "") {
-      throw new AiError(
-        "ai_not_configured",
-        "Use a resource-root endpoint or a full deployment-based chat-completions URL."
-      );
-    }
-
-    url.pathname =
-      `/openai/deployments/${encodeURIComponent(deployment)}` +
-      "/chat/completions";
+    url.pathname = path;
   }
 
-  if (!url.searchParams.has("api-version")) {
+  if (!/\/v1\/chat\/completions$/i.test(url.pathname) && !url.searchParams.has("api-version")) {
     url.searchParams.set("api-version", apiVersion);
   }
 
@@ -1166,58 +1144,36 @@ function buildLlmUrl(
 }
 
 /* ------------------------------------------------------------------ */
-/* LLM response parsing                                                */
+/* LLM response parsing                                               */
 /* ------------------------------------------------------------------ */
 
 function parseLlmResponse(data: unknown): unknown {
-  if (
-    !isRecord(data) ||
-    !Array.isArray(data.choices) ||
-    !isRecord(data.choices[0])
-  ) {
-    throw new AiError(
-      "ai_invalid_response",
-      "HKU API returned an unexpected response structure."
-    );
+  if (!isRecord(data) || !Array.isArray(data.choices) || !isRecord(data.choices[0])) {
+    throw new AiError("ai_invalid_response", "HKU API returned an unexpected response structure.");
   }
 
   const choice = data.choices[0];
 
   if (choice.finish_reason === "length") {
-    throw new AiError(
-      "ai_incomplete_output",
-      "The model response was truncated. Try a smaller set of entries."
-    );
+    throw new AiError("ai_incomplete_output", "The model response was truncated. Try a smaller set of entries.");
   }
 
   if (choice.finish_reason === "content_filter") {
-    throw new AiError(
-      "ai_filtered_output",
-      "The model response was blocked by a content filter."
-    );
+    throw new AiError("ai_filtered_output", "The model response was blocked by a content filter.");
   }
 
   if (!isRecord(choice.message)) {
-    throw new AiError(
-      "ai_invalid_response",
-      "HKU API returned no message."
-    );
+    throw new AiError("ai_invalid_response", "HKU API returned no message.");
   }
 
   if (choice.message.refusal) {
-    throw new AiError(
-      "ai_refused",
-      "The model declined to produce this analysis."
-    );
+    throw new AiError("ai_refused", "The model declined to produce this analysis.");
   }
 
   const rawText = choice.message.content;
 
   if (typeof rawText !== "string" || !rawText.trim()) {
-    throw new AiError(
-      "ai_empty_output",
-      "HKU API returned an empty response."
-    );
+    throw new AiError("ai_empty_output", "HKU API returned an empty response.");
   }
 
   const cleaned = rawText
@@ -1229,15 +1185,12 @@ function parseLlmResponse(data: unknown): unknown {
   try {
     return JSON.parse(cleaned);
   } catch {
-    throw new AiError(
-      "ai_invalid_json",
-      "The model response was not valid JSON."
-    );
+    throw new AiError("ai_invalid_json", "The model response was not valid JSON.");
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* LLM provider                                                        */
+/* LLM provider                                                       */
 /* ------------------------------------------------------------------ */
 
 export const llmProvider: AiProvider = {
@@ -1248,30 +1201,18 @@ export const llmProvider: AiProvider = {
 
     const apiKey = process.env.HKU_OPENAI_API_KEY?.trim();
     const rawEndpoint = process.env.HKU_OPENAI_ENDPOINT?.trim();
-    const apiVersion =
-      process.env.HKU_OPENAI_API_VERSION?.trim() || "2024-02-01";
+    const apiVersion = process.env.HKU_OPENAI_API_VERSION?.trim() || "2024-02-01";
     const deployment = process.env.AI_MODEL?.trim();
 
     if (!apiKey || !rawEndpoint) {
-      throw new AiError(
-        "ai_not_configured",
-        "HKU_OPENAI_API_KEY or HKU_OPENAI_ENDPOINT is missing."
-      );
+      throw new AiError("ai_not_configured", "HKU_OPENAI_API_KEY or HKU_OPENAI_ENDPOINT is missing.");
     }
 
     if (!deployment) {
-      throw new AiError(
-        "ai_not_configured",
-        "AI_MODEL is missing. Set it to the configured deployment name."
-      );
+      throw new AiError("ai_not_configured", "AI_MODEL is missing. Set it to the configured deployment name.");
     }
 
-    const url = buildLlmUrl(
-      rawEndpoint,
-      deployment,
-      apiVersion
-    );
-
+    const url = buildLlmUrl(rawEndpoint, deployment, apiVersion);
     const { system, user } = buildPrompt(req);
 
     const controller = new AbortController();
@@ -1283,67 +1224,44 @@ export const llmProvider: AiProvider = {
         headers: {
           "Content-Type": "application/json",
           "api-key": apiKey,
+          Authorization: `Bearer ${apiKey}`,
         },
         signal: controller.signal,
         body: JSON.stringify({
-          response_format: {
-            type: "json_object",
-          },
+          model: deployment,
+          response_format: { type: "json_object" },
           temperature: 0.3,
           messages: [
-            {
-              role: "system",
-              content: system,
-            },
-            {
-              role: "user",
-              content: user,
-            },
+            { role: "system", content: system },
+            { role: "user", content: user },
           ],
         }),
       });
 
       if (!response.ok) {
-        // Do not expose an upstream body that may contain sensitive data.
         throw new AiError(
           "ai_upstream_error",
-          `HKU API request failed with HTTP ${response.status}. Check the endpoint, deployment, API version, credentials, and model compatibility.`
+          `HKU API request failed with HTTP ${response.status}. Check endpoint, deployment, and API version.`
         );
       }
 
       let data: unknown;
-
       try {
         data = await response.json();
       } catch {
         if (controller.signal.aborted) {
-          throw new AiError(
-            "ai_timeout",
-            "The HKU API request timed out. Please try again."
-          );
+          throw new AiError("ai_timeout", "The HKU API request timed out. Please try again.");
         }
-
-        throw new AiError(
-          "ai_invalid_response",
-          "HKU API did not return a valid JSON response."
-        );
+        throw new AiError("ai_invalid_response", "HKU API did not return a valid JSON response.");
       }
 
       const raw = parseLlmResponse(data);
-
       return validateForRequest(raw, req).content;
     } catch (error: unknown) {
-      if (error instanceof AiError) {
-        throw error;
-      }
-
+      if (error instanceof AiError) throw error;
       if (controller.signal.aborted) {
-        throw new AiError(
-          "ai_timeout",
-          "The HKU API request timed out. Please try again."
-        );
+        throw new AiError("ai_timeout", "The HKU API request timed out. Please try again.");
       }
-
       throw new AiError(
         "ai_network_error",
         "Unable to contact the HKU API. Check the server's network access and endpoint configuration."
@@ -1355,55 +1273,11 @@ export const llmProvider: AiProvider = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Provider selection                                                  */
+/* Provider selection                                                 */
 /* ------------------------------------------------------------------ */
 
 export function getProvider(): AiProvider {
-  const mode = (process.env.AI_PROVIDER || "")
-    .trim()
-    .toLowerCase();
-
-  if (mode === "llm") {
-    return llmProvider;
-  }
-
-  if (mode === "mock") {
-    return mockProvider;
-  }
-
-  if (mode !== "") {
-    throw new AiError(
-      "ai_not_configured",
-      'AI_PROVIDER must be either "llm" or "mock".'
-    );
-  }
-
-  // Preserve automatic selection when no explicit mode is configured.
-  if (process.env.HKU_OPENAI_API_KEY?.trim()) {
-    return llmProvider;
-  }
-
-  return mockProvider;
-}
-
-/* ------------------------------------------------------------------ */
-/* Shared generation entry point                                       */
-/* ------------------------------------------------------------------ */
-
-/**
- * Recommended entry point for application code.
- *
- * Returns validated content plus the sorted list of cited source IDs.
- */
-export async function generateValidated(
-  req: AiRequest
-): Promise<{ content: AiContent; cited: number[] }> {
-  validateRequest(req);
-
-  const provider = getProvider(): AiProvider {
-  const mode = (process.env.AI_PROVIDER || "")
-    .trim()
-    .toLowerCase();
+  const mode = (process.env.AI_PROVIDER || "").trim().toLowerCase();
 
   console.info("[AI configuration]", {
     mode,
@@ -1412,11 +1286,29 @@ export async function generateValidated(
     hasModel: Boolean(process.env.AI_MODEL?.trim()),
   });
 
-  if (mode === "llm") {
+  if (mode === "llm") return llmProvider;
+  if (mode === "mock") return mockProvider;
+
+  if (mode !== "") {
+    throw new AiError("ai_not_configured", 'AI_PROVIDER must be either "llm" or "mock".');
+  }
+
+  if (process.env.HKU_OPENAI_API_KEY?.trim()) {
     return llmProvider;
   }
 
-  const content = await provider.generate(req);
+  return mockProvider;
+}
 
+/* ------------------------------------------------------------------ */
+/* Shared generation entry point                                      */
+/* ------------------------------------------------------------------ */
+
+export async function generateValidated(
+  req: AiRequest
+): Promise<{ content: AiContent; cited: number[] }> {
+  validateRequest(req);
+  const provider = getProvider();
+  const content = await provider.generate(req);
   return validateForRequest(content, req);
 }
