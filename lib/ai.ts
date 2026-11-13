@@ -1,33 +1,20 @@
-/**
- * AI analysis layer. PURE module (no database access) so it can be unit-tested and so a real model can be
- * dropped in later by implementing `AiProvider.generate` only.
- *
- *  - mockProvider  : deterministic rule-based analyser. NOT a language model. Used by default.
- *  - llmProvider   : connected to HKU's LLM API gateway (activated when AI_PROVIDER=llm).
- *
- * Guardrails live OUTSIDE the provider and apply to either one:
- *  - student text is sanitised and only ever passed as JSON data inside a delimited block (buildPrompt)
- *  - every output item must cite real entry ids from the request; anything else is rejected (validateContent)
- *  - discussion points must be open Socratic questions (validateContent)
- */
-
 export type AiKind = "group_summary" | "cross_group" | "discussion_points";
 export type SectionKind = "summary" | "disagreement" | "divergent" | "uncontrolled" | "gap" | "misconception" | "question";
 
 export interface AiEntry {
   id: number;
-  group: string; // neutral label like "Group 1" (never a real student name)
-  student: string; // neutral label like "Student A"
+  group: string;
+  student: string;
   part: number;
   tag: string | null;
   text: string;
-  table: string; // flattened mini data table, or ""
+  table: string;
   hasImage: boolean;
 }
 export interface AiRequest {
   kind: AiKind;
   part: number;
-  criteria: string; // teacher-defined criteria (trusted, but still passed as data)
+  criteria: string;
   groupLabel?: string;
   entries: AiEntry[];
 }
@@ -56,9 +43,6 @@ export class AiError extends Error {
   }
 }
 
-/* ------------------------------------------------------------------ prompt building (for a real LLM) */
-
-/** Neutralise anything that could forge our delimiters or smuggle control characters. */
 export function sanitizeStudentText(s: string): string {
   return s
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
@@ -110,14 +94,8 @@ export function buildPrompt(req: AiRequest): { system: string; user: string } {
   return { system: SYSTEM_PROMPT, user };
 }
 
-/* ------------------------------------------------------------------ output validation (any provider) */
-
 const KINDS: SectionKind[] = ["summary", "disagreement", "divergent", "uncontrolled", "gap", "misconception", "question"];
 
-/**
- * Validates structure + citations. Returns the cleaned content and the sorted list of cited ids.
- * `allowedIds` is the set of entry ids the output is permitted to cite.
- */
 export function validateContent(raw: unknown, allowedIds: Set<number>, opts: { requireQuestions?: boolean } = {}): { content: AiContent; cited: number[] } {
   const bad = (m: string) => new AiError("ai_invalid_output", m);
   if (!raw || typeof raw !== "object") throw bad("Output is not an object");
@@ -150,8 +128,6 @@ export function validateContent(raw: unknown, allowedIds: Set<number>, opts: { r
   return { content, cited: Array.from(cited).sort((a, b) => a - b) };
 }
 
-/* ------------------------------------------------------------------ mock provider */
-
 const snip = (s: string, n = 130) => {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
@@ -170,7 +146,6 @@ function firstQuantity(e: AiEntry): { v: number; unit: string } | null {
   return m ? { v: parseFloat(m[1]), unit: (m[2] || "").toLowerCase() } : null;
 }
 const ABSOLUTE = /\b(always|never|obviously|clearly|everyone knows|definitely|proves?)\b/i;
-const LABEL = (g: string) => g;
 
 function sec(kind: SectionKind, heading: string, items: AiItem[]): AiSection | null {
   const clean = items.filter((i) => i.cites.length > 0);
@@ -215,7 +190,7 @@ function groupSummary(req: AiRequest): AiContent {
   const label = req.groupLabel || req.entries[0]?.group || "This group";
   const a = analyse(req.entries, req.part);
   const tagList = Array.from(a.tagCounts.entries()).map(([t, l]) => `${t} ×${l.length}`).join(", ");
-  const summary = sec("summary", `What ${LABEL(label)} recorded`, [
+  const summary = sec("summary", `What ${label} recorded`, [
     { text: `${label} wrote ${req.entries.length} entr${req.entries.length === 1 ? "y" : "ies"} for Part ${req.part} (${tagList}).`, cites: ids(req.entries) },
     ...Array.from(a.tagCounts.entries())
       .filter(([t]) => t !== "(untagged)")
@@ -237,15 +212,7 @@ function byGroup(entries: AiEntry[]) {
   return m;
 }
 
-interface CrossFindings {
-  divergentResults: { items: AiItem[] };
-  divergentClaims: AiItem[];
-  uncontrolled: AiItem[];
-  gaps: AiItem[];
-  misconceptions: AiItem[];
-  disagreements: AiItem[];
-}
-function crossFindings(req: AiRequest): CrossFindings {
+function crossFindings(req: AiRequest) {
   const groups = byGroup(req.entries);
   const names = Array.from(groups.keys());
   const perGroup = new Map(names.map((g) => [g, analyse(groups.get(g)!, req.part)]));
@@ -262,4 +229,11 @@ function crossFindings(req: AiRequest): CrossFindings {
     for (let j = i + 1; j < qs.length; j++) {
       const A = qs[i], B = qs[j];
       if ((A.q.unit === B.q.unit || !A.q.unit || !B.q.unit) && Math.min(A.q.v, B.q.v) > 0 && Math.max(A.q.v, B.q.v) / Math.min(A.q.v, B.q.v) > 1.3)
-        results.push({ text: `${A.g} reports ${A.q.v}${A.q.unit ? " " + A.q.unit : ""} whereas ${B.g} reports ${B.q.v}${B.q.unit ? " " + B.q.unit : ""}. These are kept side by side, not averaged.`, cites: [A.e.id, B.e.id]
+        results.push({ text: `${A.g} reports ${A.q.v}${A.q.unit ? " " + A.q.unit : ""} whereas ${B.g} reports ${B.q.v}${B.q.unit ? " " + B.q.unit : ""}. These are kept side by side, not averaged.`, cites: [A.e.id, B.e.id] });
+    }
+  const hyps = names.map((g) => ({ g, e: (groups.get(g) || []).find((e) => e.tag === "Hypothesis") })).filter((x): x is { g: string; e: AiEntry } => !!x.e);
+  const claims: AiItem[] = [];
+  for (let i = 0; i < hyps.length; i++)
+    for (let j = i + 1; j < hyps.length; j++)
+      if (similarity(hyps[i].e.text, hyps[j].e.text) < 0.3) claims.push({ text: `${hyps[i].g} predicts “${snip(hyps[i].e.text, 90)}” but ${hyps[j].g} predicts “${snip(hyps[j].e.text, 90)}”.`, cites: [hyps[i].e.id, hyps[j].e.id] });
+  const unc: AiItem[] = [];
