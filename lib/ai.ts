@@ -383,4 +383,6 @@ export const llmProvider: AiProvider = {
     const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
     return JSON.parse(cleaned);
   },
-};
+};export function getProvider(): AiProvider {
+  return process.env.AI_PROVIDER === "llm" ? llmProvider : mockProvider;
+}
