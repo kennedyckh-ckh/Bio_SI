@@ -1,20 +1,33 @@
+/**
+ * AI analysis layer. PURE module (no database access) so it can be unit-tested and so a real model can be
+ * dropped in later by implementing `AiProvider.generate` only.
+ *
+ *  - mockProvider  : deterministic rule-based analyser. NOT a language model. Used by default.
+ *  - llmProvider   : placeholder. Throws until you wire a real model (see README "Wiring a real LLM").
+ *
+ * Guardrails live OUTSIDE the provider and apply to either one:
+ *  - student text is sanitised and only ever passed as JSON data inside a delimited block (buildPrompt)
+ *  - every output item must cite real entry ids from the request; anything else is rejected (validateContent)
+ *  - discussion points must be open Socratic questions (validateContent)
+ */
+
 export type AiKind = "group_summary" | "cross_group" | "discussion_points";
 export type SectionKind = "summary" | "disagreement" | "divergent" | "uncontrolled" | "gap" | "misconception" | "question";
 
 export interface AiEntry {
   id: number;
-  group: string;
-  student: string;
+  group: string; // neutral label like "Group 1" (never a real student name)
+  student: string; // neutral label like "Student A"
   part: number;
   tag: string | null;
   text: string;
-  table: string;
+  table: string; // flattened mini data table, or ""
   hasImage: boolean;
 }
 export interface AiRequest {
   kind: AiKind;
   part: number;
-  criteria: string;
+  criteria: string; // teacher-defined criteria (trusted, but still passed as data)
   groupLabel?: string;
   entries: AiEntry[];
 }
@@ -43,6 +56,9 @@ export class AiError extends Error {
   }
 }
 
+/* ------------------------------------------------------------------ prompt building (for a real LLM) */
+
+/** Neutralise anything that could forge our delimiters or smuggle control characters. */
 export function sanitizeStudentText(s: string): string {
   return s
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
@@ -94,8 +110,14 @@ export function buildPrompt(req: AiRequest): { system: string; user: string } {
   return { system: SYSTEM_PROMPT, user };
 }
 
+/* ------------------------------------------------------------------ output validation (any provider) */
+
 const KINDS: SectionKind[] = ["summary", "disagreement", "divergent", "uncontrolled", "gap", "misconception", "question"];
 
+/**
+ * Validates structure + citations. Returns the cleaned content and the sorted list of cited ids.
+ * `allowedIds` is the set of entry ids the output is permitted to cite.
+ */
 export function validateContent(raw: unknown, allowedIds: Set<number>, opts: { requireQuestions?: boolean } = {}): { content: AiContent; cited: number[] } {
   const bad = (m: string) => new AiError("ai_invalid_output", m);
   if (!raw || typeof raw !== "object") throw bad("Output is not an object");
@@ -128,6 +150,8 @@ export function validateContent(raw: unknown, allowedIds: Set<number>, opts: { r
   return { content, cited: Array.from(cited).sort((a, b) => a - b) };
 }
 
+/* ------------------------------------------------------------------ mock provider */
+
 const snip = (s: string, n = 130) => {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
@@ -146,6 +170,7 @@ function firstQuantity(e: AiEntry): { v: number; unit: string } | null {
   return m ? { v: parseFloat(m[1]), unit: (m[2] || "").toLowerCase() } : null;
 }
 const ABSOLUTE = /\b(always|never|obviously|clearly|everyone knows|definitely|proves?)\b/i;
+const LABEL = (g: string) => g;
 
 function sec(kind: SectionKind, heading: string, items: AiItem[]): AiSection | null {
   const clean = items.filter((i) => i.cites.length > 0);
@@ -190,7 +215,7 @@ function groupSummary(req: AiRequest): AiContent {
   const label = req.groupLabel || req.entries[0]?.group || "This group";
   const a = analyse(req.entries, req.part);
   const tagList = Array.from(a.tagCounts.entries()).map(([t, l]) => `${t} ×${l.length}`).join(", ");
-  const summary = sec("summary", `What ${label} recorded`, [
+  const summary = sec("summary", `What ${LABEL(label)} recorded`, [
     { text: `${label} wrote ${req.entries.length} entr${req.entries.length === 1 ? "y" : "ies"} for Part ${req.part} (${tagList}).`, cites: ids(req.entries) },
     ...Array.from(a.tagCounts.entries())
       .filter(([t]) => t !== "(untagged)")
@@ -212,7 +237,15 @@ function byGroup(entries: AiEntry[]) {
   return m;
 }
 
-function crossFindings(req: AiRequest) {
+interface CrossFindings {
+  divergentResults: { items: AiItem[]; };
+  divergentClaims: AiItem[];
+  uncontrolled: AiItem[];
+  gaps: AiItem[];
+  misconceptions: AiItem[];
+  disagreements: AiItem[];
+}
+function crossFindings(req: AiRequest): CrossFindings {
   const groups = byGroup(req.entries);
   const names = Array.from(groups.keys());
   const perGroup = new Map(names.map((g) => [g, analyse(groups.get(g)!, req.part)]));
@@ -237,3 +270,99 @@ function crossFindings(req: AiRequest) {
     for (let j = i + 1; j < hyps.length; j++)
       if (similarity(hyps[i].e.text, hyps[j].e.text) < 0.3) claims.push({ text: `${hyps[i].g} predicts “${snip(hyps[i].e.text, 90)}” but ${hyps[j].g} predicts “${snip(hyps[j].e.text, 90)}”.`, cites: [hyps[i].e.id, hyps[j].e.id] });
   const unc: AiItem[] = [];
+  if (req.part === 1) {
+    const without = names.filter((g) => perGroup.get(g)!.noControl);
+    const withCtl = names.filter((g) => !perGroup.get(g)!.noControl && (groups.get(g) || []).some((e) => e.tag === "Control variable" || e.tag === "Control"));
+    if (without.length)
+      unc.push({ text: `${without.join(", ")} did not tag any control variable${withCtl.length ? `, whereas ${withCtl.join(", ")} did` : ""}.`, cites: without.flatMap((g) => ids((groups.get(g) || []).slice(0, 1))).concat(withCtl.flatMap((g) => ids((groups.get(g) || []).filter((e) => e.tag === "Control variable" || e.tag === "Control").slice(0, 1)))) });
+  }
+  const gaps: AiItem[] = [];
+  names.forEach((g) => {
+    const a = perGroup.get(g)!;
+    a.hypNoEvidence.slice(0, 1).forEach((e) => gaps.push({ text: `${g} states a hypothesis without recorded evidence.`, cites: [e.id] }));
+    a.evidenceNoReasoning.slice(0, 1).forEach((e) => gaps.push({ text: `${g} records evidence but gives no reasoning linking it to a claim.`, cites: [e.id] }));
+  });
+  const mis: AiItem[] = [];
+  names.forEach((g) => perGroup.get(g)!.absolutes.slice(0, 1).forEach((e) => mis.push({ text: `${g} uses absolute wording (“${snip(e.text, 90)}”), which may reflect an unexamined assumption.`, cites: [e.id] })));
+  const dis: AiItem[] = [];
+  names.forEach((g) => perGroup.get(g)!.disagreements.slice(0, 1).forEach(({ a, b }) => dis.push({ text: `Within ${g}, ${a.student} and ${b.student} disagree under the tag ${a.tag}.`, cites: [a.id, b.id] })));
+  return { divergentResults: { items: results }, divergentClaims: claims, uncontrolled: unc, gaps, misconceptions: mis, disagreements: dis };
+}
+
+function crossGroup(req: AiRequest): AiContent {
+  const f = crossFindings(req);
+  const groups = byGroup(req.entries);
+  const overview = sec("summary", "What each group contributed", Array.from(groups.entries()).map(([g, l]) => ({ text: `${g}: ${l.length} entr${l.length === 1 ? "y" : "ies"}; first idea “${snip(l[0].text, 100)}”.`, cites: ids(l.slice(0, 2)) })));
+  return {
+    title: `Cross-group comparison – Part ${req.part}`,
+    sections: compact([
+      overview,
+      sec("divergent", "Divergent findings", [...f.divergentResults.items, ...f.divergentClaims]),
+      sec("disagreement", "Disagreements inside groups (preserved)", f.disagreements),
+      sec("uncontrolled", "Uncontrolled variables", f.uncontrolled),
+      sec("gap", "Evidence-to-claim gaps", f.gaps),
+      sec("misconception", "Possible underlying misconceptions", f.misconceptions),
+    ]),
+    note: MOCK_NOTE,
+  };
+}
+
+function discussion(req: AiRequest): AiContent {
+  const f = crossFindings(req);
+  const q: AiItem[] = [];
+  f.divergentResults.items.slice(0, 2).forEach((i) => q.push({ text: `Two groups recorded noticeably different results. What differences in method or conditions might explain this, and how could we find out which result is more trustworthy?`, cites: i.cites }));
+  f.divergentClaims.slice(0, 2).forEach((i) => q.push({ text: `These groups predicted different outcomes. What reasoning led each group to its prediction, and what evidence would make you change your mind?`, cites: i.cites }));
+  f.uncontrolled.slice(0, 1).forEach((i) => q.push({ text: `Which conditions might have differed from trial to trial in some groups? How could that change what the results mean?`, cites: i.cites }));
+  f.gaps.slice(0, 2).forEach((i) => q.push({ text: `Which observation or measurement directly supports (or challenges) this claim? What would you still need to see before being confident?`, cites: i.cites }));
+  f.misconceptions.slice(0, 1).forEach((i) => q.push({ text: `This statement sounds certain. Can you think of a situation where it would not be true? What does that suggest about the idea behind it?`, cites: i.cites }));
+  f.disagreements.slice(0, 1).forEach((i) => q.push({ text: `Two members of one group wrote different ideas. If you were advising them, how would you design a test that could settle it?`, cites: i.cites }));
+  if (!q.length && req.entries.length)
+    q.push({ text: `What is the strongest piece of evidence shown so far, and what would make you doubt it?`, cites: ids(req.entries.slice(0, 2)) });
+  return {
+    title: `Questions for class discussion – Part ${req.part}`,
+    sections: [{ kind: "question", heading: "Open questions to debate (no single right answer)", items: q.slice(0, 6) }],
+    note: MOCK_NOTE,
+  };
+}
+
+export const llmProvider: AiProvider = {
+  name: "hku-llm",
+  async generate(req) {
+    const apiKey = process.env.HKU_API_KEY;
+    const endpoint = process.env.HKU_API_ENDPOINT;
+    if (!apiKey || !endpoint) {
+      throw new AiError("ai_not_configured", "HKU_API_KEY or HKU_API_ENDPOINT is missing.");
+    }
+    const { system, user } = buildPrompt(req);
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey,
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: process.env.HKU_MODEL || "gpt-4o",
+        response_format: { type: "json_object" },
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new AiError("ai_upstream_error", `HKU API error (${res.status}): ${errText.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const rawText = data?.choices?.[0]?.message?.content ?? data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!rawText) throw new AiError("ai_empty_output", "HKU API returned an empty response.");
+    const cleaned = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+    return JSON.parse(cleaned);
+  },
+};
+
+export function getProvider(): AiProvider {
+  return process.env.AI_PROVIDER === "llm" ? llmProvider : mockProvider;
+}
