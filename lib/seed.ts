@@ -9,13 +9,42 @@ export const DEMO_ACCOUNTS = [
 ] as const;
 
 export function seedIfEmpty() {
-  if (get("SELECT 1 FROM users LIMIT 1")) return;
+  const hasUsers = Boolean(get("SELECT 1 FROM users LIMIT 1"));
+
   tx(() => {
     const ids: Record<string, number> = {};
+
     for (const a of DEMO_ACCOUNTS) {
-      ids[a.email] = run("INSERT INTO users(role,name,email,password_hash,created_at) VALUES(?,?,?,?,?)", a.role, a.name, a.email, hashPassword(a.password), now()).id;
+      const existing =
+        get<{ id: number }>("SELECT id FROM users WHERE email = ?", a.email) ||
+        (a.role === "educator"
+          ? get<{ id: number }>("SELECT id FROM users WHERE role = 'educator' LIMIT 1")
+          : undefined);
+
+      if (existing) {
+        run(
+          "UPDATE users SET name = ?, email = ?, password_hash = ? WHERE id = ?",
+          a.name,
+          a.email,
+          hashPassword(a.password),
+          existing.id
+        );
+        ids[a.email] = existing.id;
+      } else {
+        ids[a.email] = run(
+          "INSERT INTO users(role,name,email,password_hash,created_at) VALUES(?,?,?,?,?)",
+          a.role,
+          a.name,
+          a.email,
+          hashPassword(a.password),
+          now()
+        ).id;
+      }
     }
-    const ed = ids["educator@school.test"];
+
+    if (hasUsers) return;
+
+    const ed = ids["kennedyckh@hku.hk"];
     // The educator is responsible for Teachers 1 and 2 only. Teacher 3 is deliberately unassigned (RBAC test).
     run("INSERT INTO educator_teacher(educator_id,teacher_id) VALUES(?,?)", ed, ids["teacher1@school.test"]);
     run("INSERT INTO educator_teacher(educator_id,teacher_id) VALUES(?,?)", ed, ids["teacher2@school.test"]);
@@ -30,6 +59,7 @@ export function seedIfEmpty() {
       now(),
       now()
     ).id;
+
     const parts: Record<number, [string, string, string[]]> = {
       1: [
         "Plan a fair test to compare how much water different brands of paper towel can absorb. Decide what you will change, what you will measure and what you must keep the same. Write your aim and a hypothesis with a reason.",
@@ -47,10 +77,12 @@ export function seedIfEmpty() {
         ["Was your hypothesis supported? Which evidence shows this?", "What limitations affected your results?", "How would you improve the investigation?"],
       ],
     };
+
     for (const p of [1, 2, 3]) {
       run("INSERT INTO template_parts(template_id,part,instructions,web_link) VALUES(?,?,?,?)", tid, p, parts[p][0], parts[p][1]);
       parts[p][2].forEach((q, i) => run("INSERT INTO template_questions(template_id,part,position,text) VALUES(?,?,?,?)", tid, p, i, q));
     }
+
     for (const email of ["teacher1@school.test", "teacher2@school.test"]) {
       run(
         "INSERT INTO template_assignments(template_id,teacher_id,note,ref_links_json,assigned_at) VALUES(?,?,?,?,?)",
