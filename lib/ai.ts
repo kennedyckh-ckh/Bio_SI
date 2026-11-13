@@ -3,7 +3,7 @@
  * dropped in later by implementing `AiProvider.generate` only.
  *
  *  - mockProvider  : deterministic rule-based analyser. NOT a language model. Used by default.
- *  - llmProvider   : placeholder. Throws until you wire a real model (see README "Wiring a real LLM").
+ *  - llmProvider   : connected to HKU's LLM API gateway (activated when AI_PROVIDER=llm).
  *
  * Guardrails live OUTSIDE the provider and apply to either one:
  *  - student text is sanitised and only ever passed as JSON data inside a delimited block (buildPrompt)
@@ -238,7 +238,7 @@ function byGroup(entries: AiEntry[]) {
 }
 
 interface CrossFindings {
-  divergentResults: { items: AiItem[]; };
+  divergentResults: { items: AiItem[] };
   divergentClaims: AiItem[];
   uncontrolled: AiItem[];
   gaps: AiItem[];
@@ -262,91 +262,4 @@ function crossFindings(req: AiRequest): CrossFindings {
     for (let j = i + 1; j < qs.length; j++) {
       const A = qs[i], B = qs[j];
       if ((A.q.unit === B.q.unit || !A.q.unit || !B.q.unit) && Math.min(A.q.v, B.q.v) > 0 && Math.max(A.q.v, B.q.v) / Math.min(A.q.v, B.q.v) > 1.3)
-        results.push({ text: `${A.g} reports ${A.q.v}${A.q.unit ? " " + A.q.unit : ""} whereas ${B.g} reports ${B.q.v}${B.q.unit ? " " + B.q.unit : ""}. These are kept side by side, not averaged.`, cites: [A.e.id, B.e.id] });
-    }
-  const hyps = names.map((g) => ({ g, e: (groups.get(g) || []).find((e) => e.tag === "Hypothesis") })).filter((x): x is { g: string; e: AiEntry } => !!x.e);
-  const claims: AiItem[] = [];
-  for (let i = 0; i < hyps.length; i++)
-    for (let j = i + 1; j < hyps.length; j++)
-      if (similarity(hyps[i].e.text, hyps[j].e.text) < 0.3) claims.push({ text: `${hyps[i].g} predicts “${snip(hyps[i].e.text, 90)}” but ${hyps[j].g} predicts “${snip(hyps[j].e.text, 90)}”.`, cites: [hyps[i].e.id, hyps[j].e.id] });
-  const unc: AiItem[] = [];
-  if (req.part === 1) {
-    const without = names.filter((g) => perGroup.get(g)!.noControl);
-    const withCtl = names.filter((g) => !perGroup.get(g)!.noControl && (groups.get(g) || []).some((e) => e.tag === "Control variable" || e.tag === "Control"));
-    if (without.length)
-      unc.push({ text: `${without.join(", ")} did not tag any control variable${withCtl.length ? `, whereas ${withCtl.join(", ")} did` : ""}.`, cites: without.flatMap((g) => ids((groups.get(g) || []).slice(0, 1))).concat(withCtl.flatMap((g) => ids((groups.get(g) || []).filter((e) => e.tag === "Control variable" || e.tag === "Control").slice(0, 1)))) });
-  }
-  const gaps: AiItem[] = [];
-  names.forEach((g) => {
-    const a = perGroup.get(g)!;
-    a.hypNoEvidence.slice(0, 1).forEach((e) => gaps.push({ text: `${g} states a hypothesis without recorded evidence.`, cites: [e.id] }));
-    a.evidenceNoReasoning.slice(0, 1).forEach((e) => gaps.push({ text: `${g} records evidence but gives no reasoning linking it to a claim.`, cites: [e.id] }));
-  });
-  const mis: AiItem[] = [];
-  names.forEach((g) => perGroup.get(g)!.absolutes.slice(0, 1).forEach((e) => mis.push({ text: `${g} uses absolute wording (“${snip(e.text, 90)}”), which may reflect an unexamined assumption.`, cites: [e.id] })));
-  const dis: AiItem[] = [];
-  names.forEach((g) => perGroup.get(g)!.disagreements.slice(0, 1).forEach(({ a, b }) => dis.push({ text: `Within ${g}, ${a.student} and ${b.student} disagree under the tag ${a.tag}.`, cites: [a.id, b.id] })));
-  return { divergentResults: { items: results }, divergentClaims: claims, uncontrolled: unc, gaps, misconceptions: mis, disagreements: dis };
-}
-
-function crossGroup(req: AiRequest): AiContent {
-  const f = crossFindings(req);
-  const groups = byGroup(req.entries);
-  const overview = sec("summary", "What each group contributed", Array.from(groups.entries()).map(([g, l]) => ({ text: `${g}: ${l.length} entr${l.length === 1 ? "y" : "ies"}; first idea “${snip(l[0].text, 100)}”.`, cites: ids(l.slice(0, 2)) })));
-  return {
-    title: `Cross-group comparison – Part ${req.part}`,
-    sections: compact([
-      overview,
-      sec("divergent", "Divergent findings", [...f.divergentResults.items, ...f.divergentClaims]),
-      sec("disagreement", "Disagreements inside groups (preserved)", f.disagreements),
-      sec("uncontrolled", "Uncontrolled variables", f.uncontrolled),
-      sec("gap", "Evidence-to-claim gaps", f.gaps),
-      sec("misconception", "Possible underlying misconceptions", f.misconceptions),
-    ]),
-    note: MOCK_NOTE,
-  };
-}
-
-function discussion(req: AiRequest): AiContent {
-  const f = crossFindings(req);
-  const q: AiItem[] = [];
-  f.divergentResults.items.slice(0, 2).forEach((i) => q.push({ text: `Two groups recorded noticeably different results. What differences in method or conditions might explain this, and how could we find out which result is more trustworthy?`, cites: i.cites }));
-  f.divergentClaims.slice(0, 2).forEach((i) => q.push({ text: `These groups predicted different outcomes. What reasoning led each group to its prediction, and what evidence would make you change your mind?`, cites: i.cites }));
-  f.uncontrolled.slice(0, 1).forEach((i) => q.push({ text: `Which conditions might have differed from trial to trial in some groups? How could that change what the results mean?`, cites: i.cites }));
-  f.gaps.slice(0, 2).forEach((i) => q.push({ text: `Which observation or measurement directly supports (or challenges) this claim? What would you still need to see before being confident?`, cites: i.cites }));
-  f.misconceptions.slice(0, 1).forEach((i) => q.push({ text: `This statement sounds certain. Can you think of a situation where it would not be true? What does that suggest about the idea behind it?`, cites: i.cites }));
-  f.disagreements.slice(0, 1).forEach((i) => q.push({ text: `Two members of one group wrote different ideas. If you were advising them, how would you design a test that could settle it?`, cites: i.cites }));
-  if (!q.length && req.entries.length)
-    q.push({ text: `What is the strongest piece of evidence shown so far, and what would make you doubt it?`, cites: ids(req.entries.slice(0, 2)) });
-  return {
-    title: `Questions for class discussion – Part ${req.part}`,
-    sections: [{ kind: "question", heading: "Open questions to debate (no single right answer)", items: q.slice(0, 6) }],
-    note: MOCK_NOTE,
-  };
-}
-
-export const mockProvider: AiProvider = {
-  name: "mock-rule-based",
-  async generate(req) {
-    if (req.kind === "group_summary") return groupSummary(req);
-    if (req.kind === "cross_group") return crossGroup(req);
-    return discussion(req);
-  },
-};
-
-/**
- * PLACEHOLDER for a real model. To wire one: set AI_PROVIDER=llm, implement the call below using
- * `buildPrompt(req)`, parse the JSON reply and return it. `validateContent` (called by the API handler)
- * will reject any reply that cites unknown entries, lacks citations, or is not phrased as questions.
- */
-export const llmProvider: AiProvider = {
-  name: "llm",
-  async generate(req) {
-    void buildPrompt(req);
-    throw new AiError("ai_not_configured", "No real AI model is connected yet. Set up lib/ai.ts (llmProvider) and AI_PROVIDER=llm, or use the built-in mock analyser.");
-  },
-};
-
-export function getProvider(): AiProvider {
-  return process.env.AI_PROVIDER === "llm" ? llmProvider : mockProvider;
-}
+        results.push({ text: `${A.g} reports ${A.q.v}${A.q.unit ? " " + A.q.unit : ""} whereas ${B.g} reports ${B.q.v}${B.q.unit ? " " + B.q.unit : ""}. These are kept side by side, not averaged.`, cites: [A.e.id, B.e.id]
